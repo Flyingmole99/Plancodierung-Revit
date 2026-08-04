@@ -1,0 +1,119 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        Title="Plancodierung konfigurieren"
+        Height="640" Width="1080"
+        WindowStartupLocation="CenterScreen"
+        Background="#FFF7F7F7">
+    <Window.Resources>
+        <x:Array x:Key="QuellenListe" Type="sys:String">
+            <sys:String>projektinfo</sys:String>
+            <sys:String>sheet_parameter</sys:String>
+            <sys:String>auto</sys:String>
+            <sys:String>konstante</sys:String>
+            <sys:String>mapping</sys:String>
+        </x:Array>
+        <x:Array x:Key="TypenListe" Type="sys:String">
+            <sys:String>freitext</sys:String>
+            <sys:String>liste</sys:String>
+            <sys:String>regex</sys:String>
+        </x:Array>
+        <x:Array x:Key="PaddingListe" Type="sys:String">
+            <sys:String>keins</sys:String>
+            <sys:String>nullen</sys:String>
+        </x:Array>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Kopfzeile: Schemaname + Trennzeichen -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="60"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Schema-Name:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="SemiBold"/>
+            <TextBox Grid.Column="1" x:Name="txtSchemaName" VerticalAlignment="Center" Padding="4,2"/>
+            <TextBlock Grid.Column="2" Text="Trennzeichen:" VerticalAlignment="Center" Margin="16,0,6,0" FontWeight="SemiBold"/>
+            <TextBox Grid.Column="3" x:Name="txtSeparator" VerticalAlignment="Center" Padding="4,2" MaxLength="3"/>
+        </Grid>
+
+        <!-- Feldtabelle -->
+        <DataGrid Grid.Row="1" x:Name="gridFelder"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="False"
+                  HeadersVisibility="Column"
+                  RowHeight="26"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"
+                  GridLinesVisibility="All"
+                  BorderBrush="#FFCCCCCC">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Feld-ID" Binding="{Binding FeldID}" Width="90"/>
+                <DataGridComboBoxColumn Header="Quelle" Width="130"
+                                        ItemsSource="{StaticResource QuellenListe}"
+                                        SelectedItemBinding="{Binding Quelle}"/>
+                <DataGridTextColumn Header="Parameter" Binding="{Binding Parameter}" Width="150"/>
+                <DataGridTextColumn Header="L&#228;nge" Binding="{Binding Laenge}" Width="55"/>
+                <DataGridComboBoxColumn Header="Typ" Width="90"
+                                        ItemsSource="{StaticResource TypenListe}"
+                                        SelectedItemBinding="{Binding Typ}"/>
+                <DataGridTextColumn Header="Werte / Muster / Mapping (A=B;...)" Binding="{Binding Werte}" Width="*"/>
+                <DataGridComboBoxColumn Header="Padding" Width="80"
+                                        ItemsSource="{StaticResource PaddingListe}"
+                                        SelectedItemBinding="{Binding Padding}"/>
+                <DataGridTextColumn Header="Z&#228;hlgruppe (IDs;)" Binding="{Binding Zaehlgruppe}" Width="140"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- Zeilen-Buttons -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button x:Name="btnNeu" Content="+ Feld" Width="70" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnLoeschen" Content="&#215; L&#246;schen" Width="80" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnHoch" Content="&#9650; Hoch" Width="70" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnRunter" Content="&#9660; Runter" Width="75" Margin="0,0,20,0" Padding="4"/>
+            <Button x:Name="btnParams" Content="Sheet-Parameter anzeigen" Width="170" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnImport" Content="Vorlage laden…" Width="110" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnExport" Content="Als Vorlage exportieren…" Width="160" Margin="0,0,6,0" Padding="4"/>
+            <Button x:Name="btnStandard" Content="Standardschema" Width="115" Padding="4"/>
+        </StackPanel>
+
+        <!-- Vorschau -->
+        <Border Grid.Row="3" Background="#FFEAF3F7" BorderBrush="#FF196A88" BorderThickness="1"
+                CornerRadius="3" Margin="0,10,0,0" Padding="8">
+            <StackPanel>
+                <TextBlock x:Name="lblVorschau" Text="Vorschau: –" FontFamily="Consolas" FontSize="14"/>
+                <TextBlock x:Name="lblVorschauFehler" Text="" Foreground="#FFB00020"
+                           TextWrapping="Wrap" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Fußzeile -->
+        <Grid Grid.Row="4" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" VerticalAlignment="Center" Foreground="#FF666666"
+                       Text="Konfiguration wird im Projekt gespeichert (Extensible Storage) und wandert mit der Datei."/>
+            <Button Grid.Column="1" x:Name="btnVorschau" Content="Vorschau aktualisieren" Width="150" Margin="0,0,8,0" Padding="6,4"/>
+            <Button Grid.Column="2" x:Name="btnSpeichern" Content="Speichern" Width="110" Margin="0,0,8,0" Padding="6,4"
+                    FontWeight="SemiBold" Background="#FF196A88" Foreground="White"/>
+            <Button Grid.Column="3" x:Name="btnAbbrechen" Content="Abbrechen" Width="90" Padding="6,4"/>
+        </Grid>
+    </Grid>
+</Window>

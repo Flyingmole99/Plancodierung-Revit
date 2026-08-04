@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="Plancodierung konfigurieren"
-        Height="640" Width="1080"
+        Height="660" Width="1080"
         WindowStartupLocation="CenterScreen"
         Background="#FFF7F7F7">
     <Window.Resources>
@@ -65,7 +65,20 @@
                 <DataGridComboBoxColumn Header="Quelle" Width="130"
                                         ItemsSource="{StaticResource QuellenListe}"
                                         SelectedItemBinding="{Binding Quelle}"/>
-                <DataGridTextColumn Header="Parameter" Binding="{Binding Parameter}" Width="150"/>
+                <DataGridTemplateColumn Header="Parameter" Width="160">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Parameter}" VerticalAlignment="Center" Margin="4,0"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate>
+                        <DataTemplate>
+                            <ComboBox IsEditable="True"
+                                      Text="{Binding Parameter, UpdateSourceTrigger=PropertyChanged}"
+                                      ItemsSource="{DynamicResource ParamNamen}"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTextColumn Header="L&#228;nge" Binding="{Binding Laenge}" Width="55"/>
                 <DataGridComboBoxColumn Header="Typ" Width="90"
                                         ItemsSource="{StaticResource TypenListe}"
@@ -94,7 +107,8 @@
         <Border Grid.Row="3" Background="#FFEAF3F7" BorderBrush="#FF196A88" BorderThickness="1"
                 CornerRadius="3" Margin="0,10,0,0" Padding="8">
             <StackPanel>
-                <TextBlock x:Name="lblVorschau" Text="Vorschau: –" FontFamily="Consolas" FontSize="14"/>
+                <TextBlock x:Name="lblVorschau" Text="Vorschau: –" FontFamily="Consolas" FontSize="13"
+                           TextWrapping="Wrap"/>
                 <TextBlock x:Name="lblVorschauFehler" Text="" Foreground="#FFB00020"
                            TextWrapping="Wrap" Margin="0,2,0,0"/>
             </StackPanel>

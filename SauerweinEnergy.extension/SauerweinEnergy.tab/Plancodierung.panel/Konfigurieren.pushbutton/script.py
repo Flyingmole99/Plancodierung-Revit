@@ -5,19 +5,22 @@ Definiert das Codierungsschema (Felder, Laengen, erlaubte Inhalte)
 direkt in Revit. Die Konfiguration wird im Projekt gespeichert."""
 __title__ = "Konfigurieren"
 __author__ = "SAUERWEIN ENERGY"
+__context__ = "doc-project"
 
 import io
 import os
 
-from pyrevit import forms, revit, script
+from pyrevit import forms, revit
 
+from System import Action
+from System.Collections.Generic import List
 from System.Collections.ObjectModel import ObservableCollection
 from System.ComponentModel import INotifyPropertyChanged, PropertyChangedEventArgs
+from System.Windows.Controls import DataGridEditingUnit
 
-from plancode import config_store, interpreter
+from plancode import config_store, interpreter, logik
 
 doc = revit.doc
-logger = script.get_logger()
 
 
 # ---------------------------------------------------------------- Zeilenmodell
@@ -86,11 +89,12 @@ class FeldZeile(INotifyPropertyChanged):
 # ---------------------------------------------------------------- Dialog
 class ConfigDialog(forms.WPFWindow):
 
-    def __init__(self):
+    def __init__(self, config, lesefehler):
         forms.WPFWindow.__init__(self, os.path.join(
             os.path.dirname(__file__), "ConfigDialog.xaml"))
 
-        config, _ = config_store.load_config(doc)
+        self._lesefehler = lesefehler
+        self._lade_parameternamen()
         self._lade_config(config)
 
         self.btnNeu.Click += self._neu
@@ -105,9 +109,29 @@ class ConfigDialog(forms.WPFWindow):
         self.btnSpeichern.Click += self._speichern
         self.btnAbbrechen.Click += lambda s, e: self.Close()
 
+        # Vorschau automatisch nachziehen, sobald eine Zelle bearbeitet wurde
+        # (verzoegert per Dispatcher, damit der Wert schon uebernommen ist)
+        self.gridFelder.CellEditEnding += self._nach_edit
+        self.gridFelder.RowEditEnding += self._nach_edit
+        self.txtSeparator.TextChanged += self._nach_edit
+
         self._vorschau()
 
     # ------------------------------------------------------------ Daten
+    def _lade_parameternamen(self):
+        """Parameternamen fuer die ComboBox-Spalte 'Parameter' sammeln."""
+        namen = set()
+        try:
+            for p in doc.ProjectInformation.Parameters:
+                namen.add(p.Definition.Name)
+            sheets = interpreter.alle_sheets(doc)
+            if sheets:
+                for p in sheets[0].Parameters:
+                    namen.add(p.Definition.Name)
+        except Exception:
+            pass
+        self.Resources["ParamNamen"] = List[str](sorted(namen))
+
     def _lade_config(self, config):
         self.txtSchemaName.Text = config.get("schema_name", "")
         self.txtSeparator.Text = config.get("separator", "-")
@@ -117,6 +141,13 @@ class ConfigDialog(forms.WPFWindow):
         self.gridFelder.ItemsSource = self.zeilen
 
     def _aktuelle_config(self):
+        # Offene Zellen-/Zeilenbearbeitung uebernehmen, sonst liest die
+        # Vorschau bzw. das Speichern einen veralteten Stand
+        try:
+            self.gridFelder.CommitEdit(DataGridEditingUnit.Cell, True)
+            self.gridFelder.CommitEdit(DataGridEditingUnit.Row, True)
+        except Exception:
+            pass
         return {
             "schema_name": self.txtSchemaName.Text.strip() or "Ohne Namen",
             "separator": self.txtSeparator.Text,
@@ -131,6 +162,7 @@ class ConfigDialog(forms.WPFWindow):
         zeile = self.gridFelder.SelectedItem
         if zeile is not None:
             self.zeilen.Remove(zeile)
+            self._vorschau()
 
     def _verschiebe(self, richtung):
         idx = self.gridFelder.SelectedIndex
@@ -139,6 +171,7 @@ class ConfigDialog(forms.WPFWindow):
             return
         self.zeilen.Move(idx, neu)
         self.gridFelder.SelectedIndex = neu
+        self._vorschau()
 
     def _zeige_parameter(self, sender, args):
         """Alle am Sheet verfuegbaren Parameternamen anzeigen."""
@@ -185,9 +218,21 @@ class ConfigDialog(forms.WPFWindow):
             self._vorschau()
 
     # ------------------------------------------------------------ Vorschau
+    def _nach_edit(self, sender, args):
+        try:
+            self.Dispatcher.BeginInvoke(Action(self._vorschau_sicher))
+        except Exception:
+            pass
+
+    def _vorschau_sicher(self):
+        try:
+            self._vorschau()
+        except Exception:
+            pass
+
     def _vorschau(self):
         config = self._aktuelle_config()
-        fehler = interpreter.pruefe_konfiguration(config)
+        fehler = logik.pruefe_konfiguration(config)
         if fehler:
             self.lblVorschau.Text = "Vorschau: –"
             self.lblVorschauFehler.Text = "Konfiguration: " + " | ".join(fehler)
@@ -197,25 +242,49 @@ class ConfigDialog(forms.WPFWindow):
             self.lblVorschau.Text = "Vorschau: (keine Plaene im Projekt)"
             self.lblVorschauFehler.Text = ""
             return
-        erg = interpreter.baue_codes(doc, config, sheets=sheets[:1])[0]
-        self.lblVorschau.Text = u"Vorschau ({}):  {}  \u2192  {}".format(
-            erg["sheet"].Name, erg["alt"], erg["neu"])
-        self.lblVorschauFehler.Text = " | ".join(erg["fehler"])
+        ergs = interpreter.baue_codes(doc, config, sheets=sheets[:3])
+        zeilen = [u"{}  →  {}".format(e["alt"], e["neu"]) for e in ergs]
+        self.lblVorschau.Text = u"Vorschau:  " + u"   |   ".join(zeilen)
+        meldungen = []
+        for e in ergs:
+            for f in e["fehler"]:
+                if f not in meldungen:
+                    meldungen.append(f)
+        self.lblVorschauFehler.Text = " | ".join(meldungen)
 
     # ------------------------------------------------------------ Speichern
     def _speichern(self, sender, args):
         config = self._aktuelle_config()
-        fehler = interpreter.pruefe_konfiguration(config)
+        fehler = logik.pruefe_konfiguration(config)
         if fehler:
             forms.alert("Konfiguration unvollstaendig:\n\n- " +
                         "\n- ".join(fehler))
             return
+        if self._lesefehler:
+            if not forms.alert(
+                    "ACHTUNG: Die im Projekt gespeicherte Konfiguration "
+                    "konnte nicht gelesen werden (beschaedigt?).\n"
+                    "Speichern UEBERSCHREIBT sie unwiderruflich.\n\n"
+                    "Trotzdem speichern?", yes=True, no=True):
+                return
         try:
             config_store.save_config(doc, config)
         except Exception as ex:
-            forms.alert("Speichern fehlgeschlagen:\n{}".format(ex))
+            forms.alert(
+                "Speichern fehlgeschlagen:\n{}\n\n"
+                "Hinweis: Bei Worksharing kann das Projektinformations-"
+                "Element von einem anderen Bearbeiter belegt sein - "
+                "dann zuerst synchronisieren.".format(ex))
             return
         self.Close()
 
 
-ConfigDialog().show_dialog()
+config, status = config_store.load_config(doc)
+if status == config_store.GELADEN_LESEFEHLER:
+    forms.alert(
+        "Die im Projekt gespeicherte Konfiguration konnte nicht gelesen "
+        "werden. Es wird das Standardschema angezeigt.\n\n"
+        "Beim Speichern wird die gespeicherte (unlesbare) Konfiguration "
+        "ueberschrieben - vorher wird noch einmal nachgefragt.")
+
+ConfigDialog(config, status == config_store.GELADEN_LESEFEHLER).show_dialog()

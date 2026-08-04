@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Generischer Interpreter: baut Plannummern aus einer beliebigen
-Feld-Konfiguration, validiert Werte und vergibt Laufnummern
-je konfigurierbarer Zaehlgruppe.
+Revit-Anbindung des Plancodierungs-Interpreters: liest Parameter und
+Laufnummern-Status aus dem Modell und baut mit der reinen Logik
+(logik.py) die Zielnummern samt Validierung und Kollisionspruefung.
 """
-import re
-
 from Autodesk.Revit.DB import (
     FilteredElementCollector, ViewSheet, BuiltInParameter
 )
 
-QUELLEN = ["projektinfo", "sheet_parameter", "auto", "konstante", "mapping"]
-TYPEN = ["freitext", "liste", "regex"]
-PADDINGS = ["keins", "nullen"]
+from plancode import config_store, logik
+
+# Re-Export fuer bestehende Aufrufer
+QUELLEN = logik.QUELLEN
+TYPEN = logik.TYPEN
+PADDINGS = logik.PADDINGS
+pruefe_konfiguration = logik.pruefe_konfiguration
 
 # Deutsche/englische UI-Namen auf BuiltInParameter mappen,
 # damit Projektinfo-Felder unabhaengig von der Revit-Sprache funktionieren
@@ -22,7 +24,10 @@ _BUILTIN_MAP = {
     "projektname": BuiltInParameter.PROJECT_NAME,
     "project name": BuiltInParameter.PROJECT_NAME,
     "auftraggeber": BuiltInParameter.CLIENT_NAME,
+    "bauherr": BuiltInParameter.CLIENT_NAME,
     "client name": BuiltInParameter.CLIENT_NAME,
+    "projektstatus": BuiltInParameter.PROJECT_STATUS,
+    "project status": BuiltInParameter.PROJECT_STATUS,
 }
 
 
@@ -39,20 +44,6 @@ def _param_as_string(elem, name):
     if val is None:
         val = p.AsValueString()
     return val or ""
-
-
-def _parse_liste(werte):
-    return [w.strip() for w in (werte or "").split(";") if w.strip()]
-
-
-def _parse_mapping(werte):
-    """'Erdgeschoss=EG;1. OG=01' -> dict"""
-    mapping = {}
-    for pair in (werte or "").split(";"):
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-            mapping[k.strip()] = v.strip()
-    return mapping
 
 
 def hole_rohwert(feld, sheet, doc):
@@ -82,7 +73,7 @@ def hole_rohwert(feld, sheet, doc):
         val = _param_as_string(sheet, pname)
         if val is None:
             return "", u"Sheet-Parameter '{}' nicht gefunden".format(pname)
-        mapping = _parse_mapping(feld.get("werte"))
+        mapping = logik.parse_mapping(feld.get("werte"))
         if val.strip() in mapping:
             return mapping[val.strip()], None
         return "", u"Wert '{}' nicht in Mapping-Tabelle".format(val.strip())
@@ -90,71 +81,35 @@ def hole_rohwert(feld, sheet, doc):
     return "", u"Unbekannte Quelle '{}'".format(quelle)
 
 
-def validiere(wert, feld):
-    """Wert gegen Typ (liste/regex) und Laenge pruefen. Liefert Fehlerliste."""
-    fehler = []
-    typ = feld.get("typ", "freitext")
-    laenge = int(feld.get("laenge") or 0)
-
-    if not wert:
-        if feld.get("quelle") != "auto":
-            fehler.append(u"Feld '{}' ist leer".format(feld.get("id")))
-        return fehler
-
-    if typ == "liste":
-        erlaubt = _parse_liste(feld.get("werte"))
-        if erlaubt and wert not in erlaubt:
-            fehler.append(u"'{}' nicht in Werteliste ({})".format(
-                wert, ";".join(erlaubt)))
-    elif typ == "regex":
-        muster = feld.get("werte") or ""
-        if muster:
-            try:
-                if not re.match(muster, wert):
-                    fehler.append(u"'{}' verletzt Muster {}".format(wert, muster))
-            except re.error:
-                fehler.append(u"Ungueltiges Regex-Muster: {}".format(muster))
-
-    if laenge > 0 and len(wert) > laenge and feld.get("padding") != "nullen":
-        fehler.append(u"'{}' laenger als {} Zeichen".format(wert, laenge))
-
-    return fehler
-
-
-def formatiere(wert, feld):
-    """Padding/Kuerzung anwenden."""
-    laenge = int(feld.get("laenge") or 0)
-    wert = wert or ""
-    if laenge > 0:
-        if feld.get("padding") == "nullen":
-            wert = wert.rjust(laenge, "0")[-laenge:]
-    return wert
-
-
 def _sortkey(sheet):
-    """Stabile, naturnahe Sortierung nach aktueller Plannummer."""
-    num = sheet.SheetNumber or ""
-    teile = re.split(r"(\d+)", num)
-    return [int(t) if t.isdigit() else t.lower() for t in teile]
+    return logik.natuerlicher_sortkey(sheet.SheetNumber or u"")
 
 
-def alle_sheets(doc, nur_ids=None):
+def alle_sheets(doc, nur_ids=None, mit_platzhaltern=False):
     sheets = list(FilteredElementCollector(doc)
                   .OfClass(ViewSheet)
                   .WhereElementIsNotElementType())
-    sheets = [s for s in sheets if not s.IsPlaceholder]
+    if not mit_platzhaltern:
+        sheets = [s for s in sheets if not s.IsPlaceholder]
     if nur_ids is not None:
         idset = set(nur_ids)
         sheets = [s for s in sheets if s.Id in idset]
     return sorted(sheets, key=_sortkey)
 
 
-def baue_codes(doc, config, sheets=None):
+def baue_codes(doc, config, sheets=None, modus="beibehalten"):
     """
     Kernfunktion: baut fuer alle Sheets den Zielcode.
     Liefert Liste von dicts:
-      {sheet, alt, neu, fehler(list), feldwerte(dict)}
-    Laufnummern werden je Zaehlgruppe fortlaufend vergeben.
+      {sheet, alt, neu, fehler(list), feldwerte(dict), state_neu(dict|None)}
+
+    modus "beibehalten": Plaene behalten ihre gespeicherte Laufnummer
+    (sticky), neue Plaene bekommen die naechste freie Nummer der Gruppe.
+    modus "neu": kompakt neu durchnummerieren.
+
+    state_neu ist der zu persistierende Laufnummern-Status, wenn er vom
+    gespeicherten abweicht - das Schreiben uebernimmt der Aufrufer
+    (nur 'Anwenden'; 'Pruefen' bleibt ein reiner Dry-Run).
     """
     if sheets is None:
         sheets = alle_sheets(doc)
@@ -170,8 +125,8 @@ def baue_codes(doc, config, sheets=None):
             if f:
                 fehler.append(f)
             if feld.get("quelle") != "auto":
-                fehler.extend(validiere(wert, feld))
-                wert = formatiere(wert, feld)
+                fehler.extend(logik.validiere(wert, feld))
+                wert = logik.formatiere(wert, feld)
             feldwerte[feld.get("id")] = wert
         ergebnisse.append({
             "sheet": sheet,
@@ -179,63 +134,74 @@ def baue_codes(doc, config, sheets=None):
             "neu": None,
             "fehler": fehler,
             "feldwerte": feldwerte,
+            "state": config_store.lade_sheet_state(sheet),
+            "state_neu": None,
         })
 
-    # Laufnummern je Zaehlgruppe vergeben
-    zaehler = {}
-    for erg in ergebnisse:
-        for feld in felder:
-            if feld.get("quelle") != "auto":
+    # Laufnummern je Auto-Feld vergeben (sticky oder neu)
+    for feld in [f for f in felder if f.get("quelle") == "auto"]:
+        fid = feld.get("id")
+        eintraege = []
+        for erg in ergebnisse:
+            eintraege.append({
+                "key": logik.gruppen_key(feld, erg["feldwerte"]),
+                "gespeichert": (erg["state"] or {}).get(fid),
+                "fehler": bool(erg["fehler"]),
+            })
+        zuteilung = logik.vergebe_laufnummern(eintraege, modus)
+        for erg, ein, zu in zip(ergebnisse, eintraege, zuteilung):
+            nr = zu["nr"]
+            if nr is None:
+                erg["feldwerte"][fid] = logik.LAUFNR_PLATZHALTER
                 continue
-            gruppe = _parse_liste(feld.get("zaehlgruppe"))
-            key = (feld.get("id"),) + tuple(
-                erg["feldwerte"].get(g, "") for g in gruppe)
-            zaehler[key] = zaehler.get(key, 0) + 1
-            wert = str(zaehler[key])
-            erg["feldwerte"][feld.get("id")] = formatiere(wert, feld)
+            text, ueberlauf = logik.laufnummer_als_text(nr, feld)
+            erg["feldwerte"][fid] = text
+            if ueberlauf:
+                erg["fehler"].append(ueberlauf)
+                continue
+            gespeichert = ein["gespeichert"] or {}
+            if (gespeichert.get("key") != ein["key"]
+                    or gespeichert.get("nr") != nr):
+                neuer_state = dict(erg["state"] or {})
+                neuer_state[fid] = {"key": ein["key"], "nr": nr}
+                erg["state"] = neuer_state
+                erg["state_neu"] = neuer_state
 
-    # Codes zusammensetzen
+    # Codes zusammensetzen; verbotene Zeichen nur bei sonst fehlerfreien
+    # Plaenen melden (Fehler-Plaene tragen den '?'-Platzhalter)
     for erg in ergebnisse:
-        teile = [erg["feldwerte"].get(f.get("id"), "") for f in felder]
-        erg["neu"] = sep.join(teile)
+        erg["neu"] = logik.baue_code(felder, erg["feldwerte"], sep)
+        if not erg["fehler"]:
+            boese = logik.verbotene_zeichen_in(erg["neu"])
+            if boese:
+                erg["fehler"].append(
+                    u"Zielnummer enthaelt in Revit unzulaessige Zeichen: "
+                    u"{}".format(u" ".join(boese)))
 
-    # Duplikate im Ergebnis markieren (z. B. bei Fehlern/Leerwerten)
-    gesehen = {}
+    # Doppelte Zielnummern markieren
+    codes = [erg["neu"] for erg in ergebnisse]
+    for code, indizes in logik.finde_duplikate(codes).items():
+        for i in indizes:
+            ergebnisse[i]["fehler"].append(
+                u"Zielnummer '{}' mehrfach vergeben".format(code))
+
+    # Kollisionen mit Nummern, die bestehen bleiben: Platzhalter-Plaene
+    # und Plaene, die wegen Fehlern uebersprungen werden
+    belegt = {}
+    for s in alle_sheets(doc, mit_platzhaltern=True):
+        if s.IsPlaceholder:
+            belegt[s.SheetNumber] = u"Platzhalter-Plan '{}'".format(s.Name)
     for erg in ergebnisse:
-        gesehen.setdefault(erg["neu"], []).append(erg)
-    for code, gruppe in gesehen.items():
-        if len(gruppe) > 1:
-            for erg in gruppe:
-                erg["fehler"].append(u"Zielnummer '{}' mehrfach vergeben".format(code))
+        if erg["fehler"]:
+            belegt.setdefault(
+                erg["alt"],
+                u"Plan '{}' (wird uebersprungen)".format(erg["sheet"].Name))
+    for erg in ergebnisse:
+        if erg["fehler"] or erg["neu"] == erg["alt"]:
+            continue
+        if erg["neu"] in belegt:
+            erg["fehler"].append(
+                u"Zielnummer '{}' ist bereits belegt durch {}".format(
+                    erg["neu"], belegt[erg["neu"]]))
 
     return ergebnisse
-
-
-def pruefe_konfiguration(config):
-    """Konfiguration selbst auf Konsistenz pruefen. Liefert Fehlerliste."""
-    fehler = []
-    felder = config.get("felder", [])
-    if not felder:
-        fehler.append(u"Keine Felder definiert.")
-    ids = [f.get("id") for f in felder]
-    for i in ids:
-        if not i:
-            fehler.append(u"Feld ohne ID vorhanden.")
-    if len(set(ids)) != len(ids):
-        fehler.append(u"Feld-IDs sind nicht eindeutig.")
-    for f in felder:
-        q = f.get("quelle")
-        if q not in QUELLEN:
-            fehler.append(u"Feld '{}': unbekannte Quelle '{}'".format(f.get("id"), q))
-        if q in ("sheet_parameter", "projektinfo", "mapping") and not f.get("parameter"):
-            fehler.append(u"Feld '{}': Parametername fehlt.".format(f.get("id")))
-        if q == "auto":
-            for g in _parse_liste(f.get("zaehlgruppe")):
-                if g not in ids:
-                    fehler.append(u"Feld '{}': Zaehlgruppe verweist auf unbekannte Feld-ID '{}'".format(f.get("id"), g))
-        if f.get("typ") == "regex" and f.get("werte"):
-            try:
-                re.compile(f.get("werte"))
-            except re.error:
-                fehler.append(u"Feld '{}': ungueltiges Regex-Muster.".format(f.get("id")))
-    return fehler
